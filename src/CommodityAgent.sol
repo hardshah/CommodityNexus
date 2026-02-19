@@ -12,6 +12,10 @@ import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {AggregatorV3Interface} from "@chainlink/contracts/src/v0.8/shared/interfaces/AggregatorV3Interface.sol";
 
+interface IERC20Metadata {
+    function totalSupply() external view returns (uint256);
+}
+
 contract CommodityAgent is CCIPReceiver, Ownable, ReentrancyGuard, EIP712 {
     using SafeERC20 for IERC20;
 
@@ -38,6 +42,9 @@ contract CommodityAgent is CCIPReceiver, Ownable, ReentrancyGuard, EIP712 {
     mapping(bytes32 => IntentRecord) internal intents;
     mapping(bytes32 => mapping(address => Bid)) internal bids;
     mapping(bytes32 => mapping(address => bool)) internal hasBid;
+    mapping(address => mapping(address => uint256)) public reservedAmount; // maker => token => reserved amount
+    mapping(address => AggregatorV3Interface) public proofOfReserveFeeds; // token => PoR feed
+    mapping(address => uint32) public porMaxStalenessSeconds; // token => max staleness for PoR
 
     struct IntentParams {
         address maker;
@@ -80,6 +87,7 @@ contract CommodityAgent is CCIPReceiver, Ownable, ReentrancyGuard, EIP712 {
         bytes32 indexed intentId, bytes32 indexed ccipMessageId, uint256 fillAmount, address dstReceiver
     );
     event OracleConfigUpdated(address oracle, uint16 deviationBps, uint32 maxStalenessSeconds);
+    event ProofOfReserveConfigUpdated(address indexed token, address porFeed, uint32 maxStalenessSeconds);
 
     error MissingOracle();
     error InvalidSignature();
@@ -96,6 +104,10 @@ contract CommodityAgent is CCIPReceiver, Ownable, ReentrancyGuard, EIP712 {
     error OverFill();
     error OracleStale();
     error OracleDeviation();
+    error InsufficientBalance();
+    error InsufficientAllowance();
+    error ProofOfReserveStale();
+    error ProofOfReserveInsufficient();
 
     constructor(
         address router,
@@ -122,6 +134,7 @@ contract CommodityAgent is CCIPReceiver, Ownable, ReentrancyGuard, EIP712 {
         if (p.deadline <= block.timestamp) revert IntentExpired();
 
         if (nonceUsed[p.maker][p.nonce]) revert NonceAlreadyUsed();
+        _checkAndReserveAssets(p.maker, p.srcToken, p.totalAmount);
 
         bytes32 structHash = keccak256(
             abi.encode(
@@ -199,6 +212,7 @@ contract CommodityAgent is CCIPReceiver, Ownable, ReentrancyGuard, EIP712 {
         ccipMessageId = _executeFill(intentId, rem);
         rec.filledAmount = rec.params.totalAmount;
         rec.state = IntentState.EXECUTED;
+        reservedAmount[rec.params.maker][rec.params.srcToken] -= rem;
     }
 
     function executePartial(bytes32 intentId, uint256 amount) external nonReentrant returns (bytes32 ccipMessageId) {
@@ -211,6 +225,7 @@ contract CommodityAgent is CCIPReceiver, Ownable, ReentrancyGuard, EIP712 {
 
         ccipMessageId = _executeFill(intentId, amount);
         rec.filledAmount += amount;
+        reservedAmount[rec.params.maker][rec.params.srcToken] -= amount;
         if (rec.filledAmount == rec.params.totalAmount) {
             rec.state = IntentState.EXECUTED;
         }
@@ -221,6 +236,26 @@ contract CommodityAgent is CCIPReceiver, Ownable, ReentrancyGuard, EIP712 {
         oracleDeviationBps = deviationBps;
         oracleMaxStalenessSeconds = maxStalenessSeconds;
         emit OracleConfigUpdated(oracle, deviationBps, maxStalenessSeconds);
+    }
+
+    function setProofOfReserveConfig(
+        address token,
+        address porFeed,
+        uint32 maxStalenessSeconds
+    ) external onlyOwner {
+        proofOfReserveFeeds[token] = AggregatorV3Interface(porFeed);
+        porMaxStalenessSeconds[token] = maxStalenessSeconds;
+        emit ProofOfReserveConfigUpdated(token, porFeed, maxStalenessSeconds);
+    }
+
+    function releaseExpiredReservation(bytes32 intentId) external {
+        IntentRecord storage rec = intents[intentId];
+        if (rec.state == IntentState.EXECUTED) revert WrongState();
+        if (block.timestamp <= rec.params.deadline) revert IntentExpired();
+        uint256 reserved = rec.params.totalAmount - rec.filledAmount;
+        if (reserved > 0) {
+            reservedAmount[rec.params.maker][rec.params.srcToken] -= reserved;
+        }
     }
 
     function getIntent(bytes32 intentId) external view returns (IntentRecord memory) {
@@ -253,6 +288,47 @@ contract CommodityAgent is CCIPReceiver, Ownable, ReentrancyGuard, EIP712 {
         return ROUTER.getFee(rec.params.dstChainSelector, message);
     }
 
+    function _checkProofOfReserve(address token) internal view {
+        AggregatorV3Interface porFeed = proofOfReserveFeeds[token];
+        if (address(porFeed) == address(0)) {
+            return; // PoR not configured for this token, skip check
+        }
+
+        (, int256 reserves,, uint256 updatedAt,) = porFeed.latestRoundData();
+        if (updatedAt == 0) revert ProofOfReserveStale();
+        uint32 maxStaleness = porMaxStalenessSeconds[token];
+        if (maxStaleness > 0 && block.timestamp - updatedAt > maxStaleness) {
+            revert ProofOfReserveStale();
+        }
+        if (reserves <= 0) revert ProofOfReserveInsufficient();
+
+        uint256 totalSupply = IERC20Metadata(token).totalSupply();
+        if (uint256(int256(reserves)) < totalSupply) {
+            revert ProofOfReserveInsufficient();
+        }
+    }
+
+    function getProofOfReserve(address token) external view returns (int256 reserves, uint256 updatedAt, uint256 totalSupply) {
+        AggregatorV3Interface porFeed = proofOfReserveFeeds[token];
+        if (address(porFeed) == address(0)) {
+            return (0, 0, IERC20Metadata(token).totalSupply());
+        }
+        (, int256 r,, uint256 u,) = porFeed.latestRoundData();
+        return (r, u, IERC20Metadata(token).totalSupply());
+    }
+
+    function _checkAndReserveAssets(address maker, address token, uint256 amount) internal {
+        uint256 availableBalance = IERC20(token).balanceOf(maker);
+        uint256 availableAllowance = IERC20(token).allowance(maker, address(this));
+        uint256 alreadyReserved = reservedAmount[maker][token];
+        uint256 available = availableBalance < availableAllowance ? availableBalance : availableAllowance;
+        if (available < alreadyReserved + amount) {
+            if (availableBalance < alreadyReserved + amount) revert InsufficientBalance();
+            revert InsufficientAllowance();
+        }
+        reservedAmount[maker][token] += amount;
+    }
+
     function _singleTokenAmount(address token, uint256 amount) internal pure returns (Client.EVMTokenAmount[] memory) {
         Client.EVMTokenAmount[] memory arr = new Client.EVMTokenAmount[](1);
         arr[0] = Client.EVMTokenAmount({token: token, amount: amount});
@@ -262,6 +338,8 @@ contract CommodityAgent is CCIPReceiver, Ownable, ReentrancyGuard, EIP712 {
     function _executeFill(bytes32 intentId, uint256 fillAmount) internal returns (bytes32 ccipMessageId) {
         IntentRecord storage rec = intents[intentId];
         IntentParams memory p = rec.params;
+
+        _checkProofOfReserve(p.srcToken);
 
         if (address(xauUsdOracle) == address(0)) revert MissingOracle();
         (, int256 price,, uint256 updatedAt,) = xauUsdOracle.latestRoundData();

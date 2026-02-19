@@ -75,7 +75,7 @@ contract MockRouter is IRouterClient {
 contract MockERC20 is IERC20 {
     mapping(address => uint256) public balanceOf;
     mapping(address => mapping(address => uint256)) public allowance;
-    uint256 public totalSupply;
+    uint256 public override totalSupply;
 
     function mint(address to, uint256 amount) external {
         balanceOf[to] += amount;
@@ -136,6 +136,7 @@ contract CommodityAgentTest is Test {
     CommodityAgentHarness public agent;
     MockRouter public router;
     MockOracle public oracle;
+    MockOracle public porOracle;
     MockERC20 public linkToken;
     MockERC20 public commodityToken;
 
@@ -147,6 +148,7 @@ contract CommodityAgentTest is Test {
     address maker;
     address solver1;
     address solver2;
+    address owner;
     uint256 makerKey;
     uint256 solver1Key;
     uint256 solver2Key;
@@ -158,13 +160,16 @@ contract CommodityAgentTest is Test {
         maker = vm.addr(makerKey);
         solver1 = vm.addr(solver1Key);
         solver2 = vm.addr(solver2Key);
+        owner = address(this);
 
         router = new MockRouter();
         oracle = new MockOracle();
+        porOracle = new MockOracle();
         linkToken = new MockERC20();
         commodityToken = new MockERC20();
 
         oracle.setPrice(2500e8, block.timestamp);
+        porOracle.setPrice(5000e18, block.timestamp);
         linkToken.mint(address(this), 1000e18);
         commodityToken.mint(maker, 1000e18);
 
@@ -178,6 +183,8 @@ contract CommodityAgentTest is Test {
         );
 
         linkToken.transfer(address(agent), 100e18);
+        vm.prank(maker);
+        commodityToken.approve(address(agent), type(uint256).max);
     }
 
     function _signIntent(CommodityAgent.IntentParams memory p) internal view returns (bytes memory) {
@@ -328,6 +335,8 @@ contract CommodityAgentTest is Test {
             maxOracleDeviationBps: 50,
             deadline: uint40(block.timestamp + 30)
         });
+        vm.prank(maker);
+        commodityToken.approve(address(agent), 100e18);
         bytes32 intentId = agent.createIntent(p, _signIntent(p));
         vm.warp(block.timestamp + 31);
         vm.prank(solver1);
@@ -630,6 +639,69 @@ contract CommodityAgentTest is Test {
         (, bytes32 intentId) = _createIntentAndAdvance();
         uint256 fee = agent.quoteCcipFee(intentId, 100e18);
         assertEq(fee, router.FEE());
+    }
+
+    function test_setProofOfReserveConfig_updatesStateAndEmits() public {
+        address token = address(commodityToken);
+        address porFeed = address(porOracle);
+        vm.expectEmit(true, true, false, false);
+        emit CommodityAgent.ProofOfReserveConfigUpdated(token, porFeed, 7200);
+        agent.setProofOfReserveConfig(token, porFeed, 7200);
+        assertEq(address(agent.proofOfReserveFeeds(token)), porFeed);
+        assertEq(agent.porMaxStalenessSeconds(token), 7200);
+    }
+
+    function test_executeIntent_proofOfReserve_passesWhenReservesExceedSupply() public {
+        address token = address(commodityToken);
+        agent.setProofOfReserveConfig(token, address(porOracle), 3600);
+        porOracle.setPrice(5000e18, block.timestamp);
+        (, bytes32 intentId) = _createIntentSelectAndApprove();
+        vm.prank(solver1);
+        agent.executeIntent(intentId);
+    }
+
+    function test_executeIntent_proofOfReserve_failsWhenReservesLessThanSupply() public {
+        address token = address(commodityToken);
+        agent.setProofOfReserveConfig(token, address(porOracle), 3600);
+        porOracle.setPrice(50e18, block.timestamp);
+        (, bytes32 intentId) = _createIntentSelectAndApprove();
+        vm.prank(solver1);
+        vm.expectRevert(CommodityAgent.ProofOfReserveInsufficient.selector);
+        agent.executeIntent(intentId);
+    }
+
+    function test_executeIntent_proofOfReserve_failsWhenStale() public {
+        address token = address(commodityToken);
+        agent.setProofOfReserveConfig(token, address(porOracle), 3600);
+        vm.warp(5000);
+        porOracle.setPrice(5000e18, 1000);
+        (, bytes32 intentId) = _createIntentSelectAndApprove();
+        vm.prank(solver1);
+        vm.expectRevert(CommodityAgent.ProofOfReserveStale.selector);
+        agent.executeIntent(intentId);
+    }
+
+    function test_executeIntent_proofOfReserve_skippedWhenNotConfigured() public {
+        (, bytes32 intentId) = _createIntentSelectAndApprove();
+        vm.prank(solver1);
+        agent.executeIntent(intentId);
+    }
+
+    function test_getProofOfReserve_returnsData() public {
+        address token = address(commodityToken);
+        agent.setProofOfReserveConfig(token, address(porOracle), 3600);
+        porOracle.setPrice(5000e18, block.timestamp);
+        (int256 reserves, uint256 updatedAt, uint256 totalSupply) = agent.getProofOfReserve(token);
+        assertEq(reserves, 5000e18);
+        assertEq(updatedAt, block.timestamp);
+        assertEq(totalSupply, 1000e18);
+    }
+
+    function test_getProofOfReserve_returnsZeroWhenNotConfigured() public {
+        (int256 reserves, uint256 updatedAt, uint256 totalSupply) = agent.getProofOfReserve(address(commodityToken));
+        assertEq(reserves, 0);
+        assertEq(updatedAt, 0);
+        assertEq(totalSupply, 1000e18);
     }
 
     function test__ccipReceive_decodesAndEmitsDestinationExecution() public {
