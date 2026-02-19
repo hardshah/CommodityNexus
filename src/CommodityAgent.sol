@@ -76,7 +76,9 @@ contract CommodityAgent is CCIPReceiver, Ownable, ReentrancyGuard, EIP712 {
     event BidSubmitted(bytes32 indexed intentId, address indexed solver, uint96 executionCost, uint32 dstGasLimit);
     event BidSelected(bytes32 indexed intentId, address indexed solver, uint96 executionCost, uint32 dstGasLimit);
     event IntentExecuted(bytes32 indexed intentId, address indexed solver, uint256 fillAmount, bytes32 ccipMessageId);
-    event DestinationExecution(bytes32 indexed intentId, bytes32 indexed ccipMessageId, uint256 fillAmount, address dstReceiver);
+    event DestinationExecution(
+        bytes32 indexed intentId, bytes32 indexed ccipMessageId, uint256 fillAmount, address dstReceiver
+    );
     event OracleConfigUpdated(address oracle, uint16 deviationBps, uint32 maxStalenessSeconds);
 
     error MissingOracle();
@@ -297,7 +299,8 @@ contract CommodityAgent is CCIPReceiver, Ownable, ReentrancyGuard, EIP712 {
     }
 
     function _ccipReceive(Client.Any2EVMMessage memory message) internal override {
-        (bytes32 intentId, uint256 fillAmount, address dstReceiver) = abi.decode(message.data, (bytes32, uint256, address));
+        (bytes32 intentId, uint256 fillAmount, address dstReceiver) =
+            abi.decode(message.data, (bytes32, uint256, address));
         mockSwap(intentId, fillAmount);
         emit DestinationExecution(intentId, message.messageId, fillAmount, dstReceiver);
     }

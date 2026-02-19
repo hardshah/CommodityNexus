@@ -19,9 +19,17 @@ contract MockOracle is AggregatorV3Interface {
         roundId++;
     }
 
-    function decimals() external pure override returns (uint8) { return 8; }
-    function description() external pure override returns (string memory) { return "XAU/USD"; }
-    function version() external pure override returns (uint256) { return 1; }
+    function decimals() external pure override returns (uint8) {
+        return 8;
+    }
+
+    function description() external pure override returns (string memory) {
+        return "XAU/USD";
+    }
+
+    function version() external pure override returns (uint256) {
+        return 1;
+    }
 
     function getRoundData(uint80) external view override returns (uint80, int256, uint256, uint256, uint80) {
         return (roundId, price, updatedAt, updatedAt, roundId);
@@ -43,7 +51,9 @@ contract MockRouter is IRouterClient {
         forceRevertCcipSend = _v;
     }
 
-    function isChainSupported(uint64) external pure override returns (bool) { return true; }
+    function isChainSupported(uint64) external pure override returns (bool) {
+        return true;
+    }
 
     function getFee(uint64, Client.EVM2AnyMessage memory) external pure override returns (uint256) {
         return FEE;
@@ -90,9 +100,17 @@ contract MockERC20 is IERC20 {
         return true;
     }
 
-    function decimals() external pure returns (uint8) { return 18; }
-    function name() external pure returns (string memory) { return "Mock"; }
-    function symbol() external pure returns (string memory) { return "M"; }
+    function decimals() external pure returns (uint8) {
+        return 18;
+    }
+
+    function name() external pure returns (string memory) {
+        return "Mock";
+    }
+
+    function symbol() external pure returns (string memory) {
+        return "M";
+    }
 }
 
 contract CommodityAgentHarness is CommodityAgent {
@@ -103,7 +121,11 @@ contract CommodityAgentHarness is CommodityAgent {
         address xauUsdOracle_,
         uint16 oracleDeviationBps_,
         uint32 oracleMaxStalenessSeconds_
-    ) CommodityAgent(router, linkFeeToken, localChainSelector, xauUsdOracle_, oracleDeviationBps_, oracleMaxStalenessSeconds_) {}
+    )
+        CommodityAgent(
+            router, linkFeeToken, localChainSelector, xauUsdOracle_, oracleDeviationBps_, oracleMaxStalenessSeconds_
+        )
+    {}
 
     function exposed_ccipReceive(Client.Any2EVMMessage memory m) external {
         _ccipReceive(m);
@@ -179,16 +201,13 @@ contract CommodityAgentTest is Test {
     }
 
     function _hashTypedData(bytes32 structHash) internal view returns (bytes32) {
-        (
-            ,
-            string memory name,
-            string memory version,
-            uint256 chainId,
-            address verifyingContract,
-            ,
-        ) = agent.eip712Domain();
-        bytes32 typeHash = keccak256("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)");
-        bytes32 domainSeparator = keccak256(abi.encode(typeHash, keccak256(bytes(name)), keccak256(bytes(version)), chainId, verifyingContract));
+        (, string memory name, string memory version, uint256 chainId, address verifyingContract,,) =
+            agent.eip712Domain();
+        bytes32 typeHash =
+            keccak256("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)");
+        bytes32 domainSeparator = keccak256(
+            abi.encode(typeHash, keccak256(bytes(name)), keccak256(bytes(version)), chainId, verifyingContract)
+        );
         return keccak256(abi.encodePacked("\x19\x01", domainSeparator, structHash));
     }
 
@@ -445,7 +464,9 @@ contract CommodityAgentTest is Test {
         });
         vm.prank(address(router));
         vm.expectEmit(true, true, true, true);
-        emit CommodityAgent.DestinationExecution(intentId, message.messageId, fillAmount, address(0x1234567890123456789012345678901234567890));
+        emit CommodityAgent.DestinationExecution(
+            intentId, message.messageId, fillAmount, address(0x1234567890123456789012345678901234567890)
+        );
         agent.exposed_ccipReceive(message);
     }
 

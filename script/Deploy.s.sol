@@ -10,12 +10,22 @@ contract MockOracleDeploy is AggregatorV3Interface {
     uint256 public updatedAt = block.timestamp;
     uint80 public roundId = 1;
 
-    function decimals() external pure override returns (uint8) { return 8; }
-    function description() external pure override returns (string memory) { return "XAU/USD Mock"; }
-    function version() external pure override returns (uint256) { return 1; }
+    function decimals() external pure override returns (uint8) {
+        return 8;
+    }
+
+    function description() external pure override returns (string memory) {
+        return "XAU/USD Mock";
+    }
+
+    function version() external pure override returns (uint256) {
+        return 1;
+    }
+
     function getRoundData(uint80) external view override returns (uint80, int256, uint256, uint256, uint80) {
         return (roundId, price, updatedAt, updatedAt, roundId);
     }
+
     function latestRoundData() external view override returns (uint80, int256, uint256, uint256, uint80) {
         return (roundId, price, updatedAt, updatedAt, roundId);
     }
@@ -35,14 +45,7 @@ contract DeployScript is Script {
         }
 
         vm.broadcast();
-        CommodityAgent agent = new CommodityAgent(
-            router,
-            linkToken,
-            chainSelector,
-            xauOracle,
-            50,
-            3600
-        );
+        CommodityAgent agent = new CommodityAgent(router, linkToken, chainSelector, xauOracle, 50, 3600);
         console.log("CommodityAgent deployed at:", address(agent));
     }
 }
