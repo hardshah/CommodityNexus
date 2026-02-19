@@ -403,6 +403,34 @@ contract CommodityAgentTest is Test {
         assertEq(agent.getIntent(intentId).filledAmount, 0);
     }
 
+    function test_setOracleConfig_updatesStateAndEmits() public {
+        address newOracle = address(0xBEEF);
+        uint16 newDeviation = 75;
+        uint32 newStaleness = 7200;
+        vm.expectEmit(true, false, false, true);
+        emit CommodityAgent.OracleConfigUpdated(newOracle, newDeviation, newStaleness);
+        agent.setOracleConfig(newOracle, newDeviation, newStaleness);
+        assertEq(address(agent.xauUsdOracle()), newOracle);
+        assertEq(agent.oracleDeviationBps(), newDeviation);
+        assertEq(agent.oracleMaxStalenessSeconds(), newStaleness);
+    }
+
+    function test_remaining_and_filledAmount_consistent() public {
+        (, bytes32 intentId) = _createIntentSelectAndApprove();
+        CommodityAgent.IntentRecord memory recBefore = agent.getIntent(intentId);
+        assertEq(agent.remaining(intentId), recBefore.params.totalAmount);
+        vm.prank(solver1);
+        agent.executePartial(intentId, 40e18);
+        CommodityAgent.IntentRecord memory recMid = agent.getIntent(intentId);
+        assertEq(recMid.filledAmount, 40e18);
+        assertEq(agent.remaining(intentId), recMid.params.totalAmount - recMid.filledAmount);
+        vm.prank(solver1);
+        agent.executeIntent(intentId);
+        CommodityAgent.IntentRecord memory recAfter = agent.getIntent(intentId);
+        assertEq(recAfter.filledAmount, recAfter.params.totalAmount);
+        assertEq(agent.remaining(intentId), 0);
+    }
+
     function test__ccipReceive_decodesAndEmitsDestinationExecution() public {
         address dstReceiver = address(0x1234567890123456789012345678901234567890);
         bytes32 intentId = keccak256("test-intent");
