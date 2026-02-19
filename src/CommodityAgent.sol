@@ -238,11 +238,7 @@ contract CommodityAgent is CCIPReceiver, Ownable, ReentrancyGuard, EIP712 {
         emit OracleConfigUpdated(oracle, deviationBps, maxStalenessSeconds);
     }
 
-    function setProofOfReserveConfig(
-        address token,
-        address porFeed,
-        uint32 maxStalenessSeconds
-    ) external onlyOwner {
+    function setProofOfReserveConfig(address token, address porFeed, uint32 maxStalenessSeconds) external onlyOwner {
         proofOfReserveFeeds[token] = AggregatorV3Interface(porFeed);
         porMaxStalenessSeconds[token] = maxStalenessSeconds;
         emit ProofOfReserveConfigUpdated(token, porFeed, maxStalenessSeconds);
@@ -308,7 +304,11 @@ contract CommodityAgent is CCIPReceiver, Ownable, ReentrancyGuard, EIP712 {
         }
     }
 
-    function getProofOfReserve(address token) external view returns (int256 reserves, uint256 updatedAt, uint256 totalSupply) {
+    function getProofOfReserve(address token)
+        external
+        view
+        returns (int256 reserves, uint256 updatedAt, uint256 totalSupply)
+    {
         AggregatorV3Interface porFeed = proofOfReserveFeeds[token];
         if (address(porFeed) == address(0)) {
             return (0, 0, IERC20Metadata(token).totalSupply());

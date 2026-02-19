@@ -113,642 +113,645 @@ contract MockERC20 is IERC20 {
     }
 }
 
-contract CommodityAgentHarness is CommodityAgent {
-    constructor(
-        address router,
-        address linkFeeToken,
-        uint64 localChainSelector,
-        address xauUsdOracle_,
-        uint16 oracleDeviationBps_,
-        uint32 oracleMaxStalenessSeconds_
-    )
-        CommodityAgent(
-            router, linkFeeToken, localChainSelector, xauUsdOracle_, oracleDeviationBps_, oracleMaxStalenessSeconds_
+    contract CommodityAgentHarness is CommodityAgent {
+        constructor(
+            address router,
+            address linkFeeToken,
+            uint64 localChainSelector,
+            address xauUsdOracle_,
+            uint16 oracleDeviationBps_,
+            uint32 oracleMaxStalenessSeconds_
         )
-    {}
-
-    function exposed_ccipReceive(Client.Any2EVMMessage memory m) external {
-        _ccipReceive(m);
-    }
-}
-
-contract CommodityAgentTest is Test {
-    CommodityAgentHarness public agent;
-    MockRouter public router;
-    MockOracle public oracle;
-    MockOracle public porOracle;
-    MockERC20 public linkToken;
-    MockERC20 public commodityToken;
-
-    uint64 constant LOCAL_SELECTOR = 10344971235874465080;
-    uint64 constant DST_SELECTOR = 3478487238524512106;
-    uint16 constant DEFAULT_DEVIATION_BPS = 50;
-    uint32 constant DEFAULT_STALENESS = 3600;
-
-    address maker;
-    address solver1;
-    address solver2;
-    address owner;
-    uint256 makerKey;
-    uint256 solver1Key;
-    uint256 solver2Key;
-
-    function setUp() public {
-        makerKey = 0xa11ce;
-        solver1Key = 0xb0b;
-        solver2Key = 0xc0c;
-        maker = vm.addr(makerKey);
-        solver1 = vm.addr(solver1Key);
-        solver2 = vm.addr(solver2Key);
-        owner = address(this);
-
-        router = new MockRouter();
-        oracle = new MockOracle();
-        porOracle = new MockOracle();
-        linkToken = new MockERC20();
-        commodityToken = new MockERC20();
-
-        oracle.setPrice(2500e8, block.timestamp);
-        porOracle.setPrice(5000e18, block.timestamp);
-        linkToken.mint(address(this), 1000e18);
-        commodityToken.mint(maker, 1000e18);
-
-        agent = new CommodityAgentHarness(
-            address(router),
-            address(linkToken),
-            LOCAL_SELECTOR,
-            address(oracle),
-            DEFAULT_DEVIATION_BPS,
-            DEFAULT_STALENESS
-        );
-
-        linkToken.transfer(address(agent), 100e18);
-        vm.prank(maker);
-        commodityToken.approve(address(agent), type(uint256).max);
-    }
-
-    function _signIntent(CommodityAgent.IntentParams memory p) internal view returns (bytes memory) {
-        bytes32 structHash = keccak256(
-            abi.encode(
-                agent.INTENT_TYPEHASH(),
-                p.maker,
-                p.srcChainSelector,
-                p.dstChainSelector,
-                p.srcToken,
-                p.dstReceiver,
-                p.totalAmount,
-                p.nonce,
-                p.xauUsdRef,
-                p.maxOracleDeviationBps,
-                p.deadline
+            CommodityAgent(
+                router, linkFeeToken, localChainSelector, xauUsdOracle_, oracleDeviationBps_, oracleMaxStalenessSeconds_
             )
-        );
-        (uint8 v, bytes32 r, bytes32 s) = vm.sign(makerKey, _hashTypedData(structHash));
-        return abi.encodePacked(r, s, v);
+        {}
+
+        function exposed_ccipReceive(Client.Any2EVMMessage memory m) external {
+            _ccipReceive(m);
+        }
     }
 
-    function _hashTypedData(bytes32 structHash) internal view returns (bytes32) {
-        (, string memory name, string memory version, uint256 chainId, address verifyingContract,,) =
-            agent.eip712Domain();
-        bytes32 typeHash =
-            keccak256("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)");
-        bytes32 domainSeparator = keccak256(
-            abi.encode(typeHash, keccak256(bytes(name)), keccak256(bytes(version)), chainId, verifyingContract)
-        );
-        return keccak256(abi.encodePacked("\x19\x01", domainSeparator, structHash));
-    }
+    contract CommodityAgentTest is Test {
+        CommodityAgentHarness public agent;
+        MockRouter public router;
+        MockOracle public oracle;
+        MockOracle public porOracle;
+        MockERC20 public linkToken;
+        MockERC20 public commodityToken;
 
-    function test_createIntent_validSignature_opensAuction() public {
-        CommodityAgent.IntentParams memory p = CommodityAgent.IntentParams({
-            maker: maker,
-            srcChainSelector: LOCAL_SELECTOR,
-            dstChainSelector: DST_SELECTOR,
-            srcToken: address(commodityToken),
-            dstReceiver: address(0x123),
-            totalAmount: 100e18,
-            nonce: 1,
-            xauUsdRef: 2500e8,
-            maxOracleDeviationBps: 50,
-            deadline: uint40(block.timestamp + 600)
-        });
-        bytes memory sig = _signIntent(p);
-        bytes32 intentId = agent.createIntent(p, sig);
-        assertTrue(intentId != bytes32(0));
-        CommodityAgent.IntentRecord memory rec = agent.getIntent(intentId);
-        assertEq(uint256(rec.state), uint256(CommodityAgent.IntentState.AUCTION_OPEN));
-        assertEq(rec.params.maker, maker);
-        assertEq(rec.params.totalAmount, 100e18);
-        assertEq(rec.filledAmount, 0);
-        assertEq(rec.auctionClosesAt, rec.auctionOpenedAt + 60);
-    }
+        uint64 constant LOCAL_SELECTOR = 10344971235874465080;
+        uint64 constant DST_SELECTOR = 3478487238524512106;
+        uint16 constant DEFAULT_DEVIATION_BPS = 50;
+        uint32 constant DEFAULT_STALENESS = 3600;
 
-    function test_createIntent_invalidSignature_reverts() public {
-        CommodityAgent.IntentParams memory p = CommodityAgent.IntentParams({
-            maker: maker,
-            srcChainSelector: LOCAL_SELECTOR,
-            dstChainSelector: DST_SELECTOR,
-            srcToken: address(commodityToken),
-            dstReceiver: address(0x123),
-            totalAmount: 100e18,
-            nonce: 2,
-            xauUsdRef: 2500e8,
-            maxOracleDeviationBps: 50,
-            deadline: uint40(block.timestamp + 600)
-        });
-        bytes32 structHash = keccak256(
-            abi.encode(
-                agent.INTENT_TYPEHASH(),
-                p.maker,
-                p.srcChainSelector,
-                p.dstChainSelector,
-                p.srcToken,
-                p.dstReceiver,
-                p.totalAmount,
-                p.nonce,
-                p.xauUsdRef,
-                p.maxOracleDeviationBps,
-                p.deadline
-            )
-        );
-        (uint8 v, bytes32 r, bytes32 s) = vm.sign(solver1Key, _hashTypedData(structHash));
-        bytes memory wrongSig = abi.encodePacked(r, s, v);
-        vm.expectRevert(CommodityAgent.InvalidSignature.selector);
-        agent.createIntent(p, wrongSig);
-    }
+        address maker;
+        address solver1;
+        address solver2;
+        address owner;
+        uint256 makerKey;
+        uint256 solver1Key;
+        uint256 solver2Key;
 
-    function test_createIntent_replayProtection_reverts() public {
-        CommodityAgent.IntentParams memory p = CommodityAgent.IntentParams({
-            maker: maker,
-            srcChainSelector: LOCAL_SELECTOR,
-            dstChainSelector: DST_SELECTOR,
-            srcToken: address(commodityToken),
-            dstReceiver: address(0x123),
-            totalAmount: 100e18,
-            nonce: 3,
-            xauUsdRef: 2500e8,
-            maxOracleDeviationBps: 50,
-            deadline: uint40(block.timestamp + 600)
-        });
-        bytes memory sig = _signIntent(p);
-        agent.createIntent(p, sig);
-        vm.expectRevert(CommodityAgent.NonceAlreadyUsed.selector);
-        agent.createIntent(p, sig);
-    }
+        function setUp() public {
+            makerKey = 0xa11ce;
+            solver1Key = 0xb0b;
+            solver2Key = 0xc0c;
+            maker = vm.addr(makerKey);
+            solver1 = vm.addr(solver1Key);
+            solver2 = vm.addr(solver2Key);
+            owner = address(this);
 
-    function test_createIntent_zeroAmount_reverts() public {
-        CommodityAgent.IntentParams memory p = CommodityAgent.IntentParams({
-            maker: maker,
-            srcChainSelector: LOCAL_SELECTOR,
-            dstChainSelector: DST_SELECTOR,
-            srcToken: address(commodityToken),
-            dstReceiver: address(0x123),
-            totalAmount: 0,
-            nonce: 4,
-            xauUsdRef: 2500e8,
-            maxOracleDeviationBps: 50,
-            deadline: uint40(block.timestamp + 600)
-        });
-        bytes memory sig = _signIntent(p);
-        vm.expectRevert(CommodityAgent.InvalidIntentParams.selector);
-        agent.createIntent(p, sig);
-    }
+            router = new MockRouter();
+            oracle = new MockOracle();
+            porOracle = new MockOracle();
+            linkToken = new MockERC20();
+            commodityToken = new MockERC20();
 
-    function test_submitBid_duplicateBid_reverts() public {
-        (, bytes32 intentId) = _createIntentAndAdvance();
-        vm.prank(solver1);
-        agent.submitBid(intentId, 1e18, 300000);
-        vm.prank(solver1);
-        vm.expectRevert(CommodityAgent.DuplicateBid.selector);
-        agent.submitBid(intentId, 2e18, 300000);
-    }
+            oracle.setPrice(2500e8, block.timestamp);
+            porOracle.setPrice(5000e18, block.timestamp);
+            linkToken.mint(address(this), 1000e18);
+            commodityToken.mint(maker, 1000e18);
 
-    function test_submitBid_expiredIntent_reverts() public {
-        CommodityAgent.IntentParams memory p = CommodityAgent.IntentParams({
-            maker: maker,
-            srcChainSelector: LOCAL_SELECTOR,
-            dstChainSelector: DST_SELECTOR,
-            srcToken: address(commodityToken),
-            dstReceiver: address(0x123),
-            totalAmount: 100e18,
-            nonce: 99,
-            xauUsdRef: 2500e8,
-            maxOracleDeviationBps: 50,
-            deadline: uint40(block.timestamp + 30)
-        });
-        vm.prank(maker);
-        commodityToken.approve(address(agent), 100e18);
-        bytes32 intentId = agent.createIntent(p, _signIntent(p));
-        vm.warp(block.timestamp + 31);
-        vm.prank(solver1);
-        vm.expectRevert(CommodityAgent.IntentExpired.selector);
-        agent.submitBid(intentId, 1e18, 300000);
-    }
+            agent = new CommodityAgentHarness(
+                address(router),
+                address(linkToken),
+                LOCAL_SELECTOR,
+                address(oracle),
+                DEFAULT_DEVIATION_BPS,
+                DEFAULT_STALENESS
+            );
 
-    function test_selectBid_beforeAuctionClose_reverts() public {
-        (, bytes32 intentId) = _createIntentAndAdvance();
-        vm.prank(solver1);
-        agent.submitBid(intentId, 1e18, 300000);
-        vm.expectRevert(CommodityAgent.AuctionStillOpen.selector);
-        agent.selectBid(intentId);
-    }
+            linkToken.transfer(address(agent), 100e18);
+            vm.prank(maker);
+            commodityToken.approve(address(agent), type(uint256).max);
+        }
 
-    function test_selectBid_noBids_reverts() public {
-        (, bytes32 intentId) = _createIntentAndAdvance();
-        vm.warp(block.timestamp + 61);
-        vm.expectRevert(CommodityAgent.NoBids.selector);
-        agent.selectBid(intentId);
-    }
+        function _signIntent(CommodityAgent.IntentParams memory p) internal view returns (bytes memory) {
+            bytes32 structHash = keccak256(
+                abi.encode(
+                    agent.INTENT_TYPEHASH(),
+                    p.maker,
+                    p.srcChainSelector,
+                    p.dstChainSelector,
+                    p.srcToken,
+                    p.dstReceiver,
+                    p.totalAmount,
+                    p.nonce,
+                    p.xauUsdRef,
+                    p.maxOracleDeviationBps,
+                    p.deadline
+                )
+            );
+            (uint8 v, bytes32 r, bytes32 s) = vm.sign(makerKey, _hashTypedData(structHash));
+            return abi.encodePacked(r, s, v);
+        }
 
-    function test_selectBid_selectsLowestExecutionCost() public {
-        (, bytes32 intentId) = _createIntentAndAdvance();
-        vm.prank(solver1);
-        agent.submitBid(intentId, 3e18, 300000);
-        vm.prank(solver2);
-        agent.submitBid(intentId, 1e18, 250000);
-        vm.warp(block.timestamp + 61);
-        vm.expectEmit(true, true, true, true);
-        emit CommodityAgent.BidSelected(intentId, solver2, 1e18, 250000);
-        agent.selectBid(intentId);
-        CommodityAgent.IntentRecord memory rec = agent.getIntent(intentId);
-        assertEq(rec.selectedSolver, solver2);
-        assertEq(rec.selectedExecutionCost, 1e18);
-        assertEq(rec.selectedDstGasLimit, 250000);
-    }
+        function _hashTypedData(bytes32 structHash) internal view returns (bytes32) {
+            (, string memory name, string memory version, uint256 chainId, address verifyingContract,,) =
+                agent.eip712Domain();
+            bytes32 typeHash =
+                keccak256("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)");
+            bytes32 domainSeparator = keccak256(
+                abi.encode(typeHash, keccak256(bytes(name)), keccak256(bytes(version)), chainId, verifyingContract)
+            );
+            return keccak256(abi.encodePacked("\x19\x01", domainSeparator, structHash));
+        }
 
-    function test_executeIntent_success_setsExecuted_andEmits() public {
-        (, bytes32 intentId) = _createIntentSelectAndApprove();
-        vm.prank(solver1);
-        bytes32 msgId = agent.executeIntent(intentId);
-        assertEq(msgId, router.MOCK_MESSAGE_ID());
-        CommodityAgent.IntentRecord memory rec = agent.getIntent(intentId);
-        assertEq(uint256(rec.state), uint256(CommodityAgent.IntentState.EXECUTED));
-        assertEq(rec.filledAmount, 100e18);
-    }
+        function test_createIntent_validSignature_opensAuction() public {
+            CommodityAgent.IntentParams memory p = CommodityAgent.IntentParams({
+                maker: maker,
+                srcChainSelector: LOCAL_SELECTOR,
+                dstChainSelector: DST_SELECTOR,
+                srcToken: address(commodityToken),
+                dstReceiver: address(0x123),
+                totalAmount: 100e18,
+                nonce: 1,
+                xauUsdRef: 2500e8,
+                maxOracleDeviationBps: 50,
+                deadline: uint40(block.timestamp + 600)
+            });
+            bytes memory sig = _signIntent(p);
+            bytes32 intentId = agent.createIntent(p, sig);
+            assertTrue(intentId != bytes32(0));
+            CommodityAgent.IntentRecord memory rec = agent.getIntent(intentId);
+            assertEq(uint256(rec.state), uint256(CommodityAgent.IntentState.AUCTION_OPEN));
+            assertEq(rec.params.maker, maker);
+            assertEq(rec.params.totalAmount, 100e18);
+            assertEq(rec.filledAmount, 0);
+            assertEq(rec.auctionClosesAt, rec.auctionOpenedAt + 60);
+        }
 
-    function test_executePartial_success_updatesFilled_andAllowsFinalFill() public {
-        (CommodityAgent.IntentParams memory p, bytes32 intentId) = _createIntentSelectAndApprove();
-        vm.startPrank(solver1);
-        agent.executePartial(intentId, 50e18);
-        assertEq(agent.getIntent(intentId).filledAmount, 50e18);
-        assertEq(uint256(agent.getIntent(intentId).state), uint256(CommodityAgent.IntentState.BID_SELECTED));
-        agent.executeIntent(intentId);
-        vm.stopPrank();
-        assertEq(agent.getIntent(intentId).filledAmount, 100e18);
-        assertEq(uint256(agent.getIntent(intentId).state), uint256(CommodityAgent.IntentState.EXECUTED));
-    }
+        function test_createIntent_invalidSignature_reverts() public {
+            CommodityAgent.IntentParams memory p = CommodityAgent.IntentParams({
+                maker: maker,
+                srcChainSelector: LOCAL_SELECTOR,
+                dstChainSelector: DST_SELECTOR,
+                srcToken: address(commodityToken),
+                dstReceiver: address(0x123),
+                totalAmount: 100e18,
+                nonce: 2,
+                xauUsdRef: 2500e8,
+                maxOracleDeviationBps: 50,
+                deadline: uint40(block.timestamp + 600)
+            });
+            bytes32 structHash = keccak256(
+                abi.encode(
+                    agent.INTENT_TYPEHASH(),
+                    p.maker,
+                    p.srcChainSelector,
+                    p.dstChainSelector,
+                    p.srcToken,
+                    p.dstReceiver,
+                    p.totalAmount,
+                    p.nonce,
+                    p.xauUsdRef,
+                    p.maxOracleDeviationBps,
+                    p.deadline
+                )
+            );
+            (uint8 v, bytes32 r, bytes32 s) = vm.sign(solver1Key, _hashTypedData(structHash));
+            bytes memory wrongSig = abi.encodePacked(r, s, v);
+            vm.expectRevert(CommodityAgent.InvalidSignature.selector);
+            agent.createIntent(p, wrongSig);
+        }
 
-    function test_executePartial_overfill_reverts() public {
-        (, bytes32 intentId) = _createIntentSelectAndApprove();
-        vm.prank(solver1);
-        vm.expectRevert(CommodityAgent.OverFill.selector);
-        agent.executePartial(intentId, 101e18);
-    }
+        function test_createIntent_replayProtection_reverts() public {
+            CommodityAgent.IntentParams memory p = CommodityAgent.IntentParams({
+                maker: maker,
+                srcChainSelector: LOCAL_SELECTOR,
+                dstChainSelector: DST_SELECTOR,
+                srcToken: address(commodityToken),
+                dstReceiver: address(0x123),
+                totalAmount: 100e18,
+                nonce: 3,
+                xauUsdRef: 2500e8,
+                maxOracleDeviationBps: 50,
+                deadline: uint40(block.timestamp + 600)
+            });
+            bytes memory sig = _signIntent(p);
+            agent.createIntent(p, sig);
+            vm.expectRevert(CommodityAgent.NonceAlreadyUsed.selector);
+            agent.createIntent(p, sig);
+        }
 
-    function test_executeIntent_oracleDeviation_reverts() public {
-        (, bytes32 intentId) = _createIntentSelectAndApprove();
-        oracle.setPrice(3000e8, block.timestamp);
-        vm.prank(solver1);
-        vm.expectRevert(CommodityAgent.OracleDeviation.selector);
-        agent.executeIntent(intentId);
-    }
+        function test_createIntent_zeroAmount_reverts() public {
+            CommodityAgent.IntentParams memory p = CommodityAgent.IntentParams({
+                maker: maker,
+                srcChainSelector: LOCAL_SELECTOR,
+                dstChainSelector: DST_SELECTOR,
+                srcToken: address(commodityToken),
+                dstReceiver: address(0x123),
+                totalAmount: 0,
+                nonce: 4,
+                xauUsdRef: 2500e8,
+                maxOracleDeviationBps: 50,
+                deadline: uint40(block.timestamp + 600)
+            });
+            bytes memory sig = _signIntent(p);
+            vm.expectRevert(CommodityAgent.InvalidIntentParams.selector);
+            agent.createIntent(p, sig);
+        }
 
-    function test_executeIntent_oracleStale_reverts() public {
-        (, bytes32 intentId) = _createIntentSelectAndApprove();
-        vm.warp(5000);
-        oracle.setPrice(2500e8, 1000);
-        vm.prank(solver1);
-        vm.expectRevert(CommodityAgent.OracleStale.selector);
-        agent.executeIntent(intentId);
-    }
+        function test_submitBid_duplicateBid_reverts() public {
+            (, bytes32 intentId) = _createIntentAndAdvance();
+            vm.prank(solver1);
+            agent.submitBid(intentId, 1e18, 300000);
+            vm.prank(solver1);
+            vm.expectRevert(CommodityAgent.DuplicateBid.selector);
+            agent.submitBid(intentId, 2e18, 300000);
+        }
 
-    function test_executeIntent_ccipSendFailure_revertsAndStateNotExecuted() public {
-        (, bytes32 intentId) = _createIntentSelectAndApprove();
-        router.setForceRevertCcipSend(true);
-        vm.prank(solver1);
-        vm.expectRevert();
-        agent.executeIntent(intentId);
-        assertEq(uint256(agent.getIntent(intentId).state), uint256(CommodityAgent.IntentState.BID_SELECTED));
-        assertEq(agent.getIntent(intentId).filledAmount, 0);
-    }
+        function test_submitBid_expiredIntent_reverts() public {
+            CommodityAgent.IntentParams memory p = CommodityAgent.IntentParams({
+                maker: maker,
+                srcChainSelector: LOCAL_SELECTOR,
+                dstChainSelector: DST_SELECTOR,
+                srcToken: address(commodityToken),
+                dstReceiver: address(0x123),
+                totalAmount: 100e18,
+                nonce: 99,
+                xauUsdRef: 2500e8,
+                maxOracleDeviationBps: 50,
+                deadline: uint40(block.timestamp + 30)
+            });
+            vm.prank(maker);
+            commodityToken.approve(address(agent), 100e18);
+            bytes32 intentId = agent.createIntent(p, _signIntent(p));
+            vm.warp(block.timestamp + 31);
+            vm.prank(solver1);
+            vm.expectRevert(CommodityAgent.IntentExpired.selector);
+            agent.submitBid(intentId, 1e18, 300000);
+        }
 
-    function test_setOracleConfig_updatesStateAndEmits() public {
-        address newOracle = address(0xBEEF);
-        uint16 newDeviation = 75;
-        uint32 newStaleness = 7200;
-        vm.expectEmit(true, false, false, true);
-        emit CommodityAgent.OracleConfigUpdated(newOracle, newDeviation, newStaleness);
-        agent.setOracleConfig(newOracle, newDeviation, newStaleness);
-        assertEq(address(agent.xauUsdOracle()), newOracle);
-        assertEq(agent.oracleDeviationBps(), newDeviation);
-        assertEq(agent.oracleMaxStalenessSeconds(), newStaleness);
-    }
+        function test_selectBid_beforeAuctionClose_reverts() public {
+            (, bytes32 intentId) = _createIntentAndAdvance();
+            vm.prank(solver1);
+            agent.submitBid(intentId, 1e18, 300000);
+            vm.expectRevert(CommodityAgent.AuctionStillOpen.selector);
+            agent.selectBid(intentId);
+        }
 
-    function test_remaining_and_filledAmount_consistent() public {
-        (, bytes32 intentId) = _createIntentSelectAndApprove();
-        CommodityAgent.IntentRecord memory recBefore = agent.getIntent(intentId);
-        assertEq(agent.remaining(intentId), recBefore.params.totalAmount);
-        vm.prank(solver1);
-        agent.executePartial(intentId, 40e18);
-        CommodityAgent.IntentRecord memory recMid = agent.getIntent(intentId);
-        assertEq(recMid.filledAmount, 40e18);
-        assertEq(agent.remaining(intentId), recMid.params.totalAmount - recMid.filledAmount);
-        vm.prank(solver1);
-        agent.executeIntent(intentId);
-        CommodityAgent.IntentRecord memory recAfter = agent.getIntent(intentId);
-        assertEq(recAfter.filledAmount, recAfter.params.totalAmount);
-        assertEq(agent.remaining(intentId), 0);
-    }
+        function test_selectBid_noBids_reverts() public {
+            (, bytes32 intentId) = _createIntentAndAdvance();
+            vm.warp(block.timestamp + 61);
+            vm.expectRevert(CommodityAgent.NoBids.selector);
+            agent.selectBid(intentId);
+        }
 
-    function test_getLatestXauUsd_returnsOraclePriceAndUpdatedAt() public {
-        oracle.setPrice(2650e8, block.timestamp);
-        (int256 price, uint256 updatedAt) = agent.getLatestXauUsd();
-        assertEq(price, 2650e8);
-        assertEq(updatedAt, block.timestamp);
-    }
+        function test_selectBid_selectsLowestExecutionCost() public {
+            (, bytes32 intentId) = _createIntentAndAdvance();
+            vm.prank(solver1);
+            agent.submitBid(intentId, 3e18, 300000);
+            vm.prank(solver2);
+            agent.submitBid(intentId, 1e18, 250000);
+            vm.warp(block.timestamp + 61);
+            vm.expectEmit(true, true, true, true);
+            emit CommodityAgent.BidSelected(intentId, solver2, 1e18, 250000);
+            agent.selectBid(intentId);
+            CommodityAgent.IntentRecord memory rec = agent.getIntent(intentId);
+            assertEq(rec.selectedSolver, solver2);
+            assertEq(rec.selectedExecutionCost, 1e18);
+            assertEq(rec.selectedDstGasLimit, 250000);
+        }
 
-    function test_getLatestXauUsd_missingOracle_reverts() public {
-        CommodityAgentHarness agentNoOracle = new CommodityAgentHarness(
-            address(router),
-            address(linkToken),
-            LOCAL_SELECTOR,
-            address(0),
-            DEFAULT_DEVIATION_BPS,
-            DEFAULT_STALENESS
-        );
-        vm.expectRevert(CommodityAgent.MissingOracle.selector);
-        agentNoOracle.getLatestXauUsd();
-    }
+        function test_executeIntent_success_setsExecuted_andEmits() public {
+            (, bytes32 intentId) = _createIntentSelectAndApprove();
+            vm.prank(solver1);
+            bytes32 msgId = agent.executeIntent(intentId);
+            assertEq(msgId, router.MOCK_MESSAGE_ID());
+            CommodityAgent.IntentRecord memory rec = agent.getIntent(intentId);
+            assertEq(uint256(rec.state), uint256(CommodityAgent.IntentState.EXECUTED));
+            assertEq(rec.filledAmount, 100e18);
+        }
 
-    function test_executeIntent_oracleDeviation_negativeRef_oppositeSigns() public {
-        CommodityAgent.IntentParams memory p = CommodityAgent.IntentParams({
-            maker: maker,
-            srcChainSelector: LOCAL_SELECTOR,
-            dstChainSelector: DST_SELECTOR,
-            srcToken: address(commodityToken),
-            dstReceiver: address(0x123),
-            totalAmount: 100e18,
-            nonce: 200,
-            xauUsdRef: -2500e8,
-            maxOracleDeviationBps: 50,
-            deadline: uint40(block.timestamp + 600)
-        });
-        bytes32 intentId = agent.createIntent(p, _signIntent(p));
-        vm.prank(solver1);
-        agent.submitBid(intentId, 1e18, 300000);
-        vm.warp(block.timestamp + 61);
-        agent.selectBid(intentId);
-        vm.prank(maker);
-        commodityToken.approve(address(agent), 100e18);
-        oracle.setPrice(2650e8, block.timestamp);
-        vm.prank(solver1);
-        vm.expectRevert(CommodityAgent.OracleDeviation.selector);
-        agent.executeIntent(intentId);
-    }
+        function test_executePartial_success_updatesFilled_andAllowsFinalFill() public {
+            (CommodityAgent.IntentParams memory p, bytes32 intentId) = _createIntentSelectAndApprove();
+            vm.startPrank(solver1);
+            agent.executePartial(intentId, 50e18);
+            assertEq(agent.getIntent(intentId).filledAmount, 50e18);
+            assertEq(uint256(agent.getIntent(intentId).state), uint256(CommodityAgent.IntentState.BID_SELECTED));
+            agent.executeIntent(intentId);
+            vm.stopPrank();
+            assertEq(agent.getIntent(intentId).filledAmount, 100e18);
+            assertEq(uint256(agent.getIntent(intentId).state), uint256(CommodityAgent.IntentState.EXECUTED));
+        }
 
-    function test_executeIntent_oracleDeviation_atThreshold_passes() public {
-        CommodityAgent.IntentParams memory p = CommodityAgent.IntentParams({
-            maker: maker,
-            srcChainSelector: LOCAL_SELECTOR,
-            dstChainSelector: DST_SELECTOR,
-            srcToken: address(commodityToken),
-            dstReceiver: address(0x123),
-            totalAmount: 100e18,
-            nonce: 201,
-            xauUsdRef: 2500e8,
-            maxOracleDeviationBps: 50,
-            deadline: uint40(block.timestamp + 600)
-        });
-        bytes32 intentId = agent.createIntent(p, _signIntent(p));
-        vm.prank(solver1);
-        agent.submitBid(intentId, 1e18, 300000);
-        vm.warp(block.timestamp + 61);
-        agent.selectBid(intentId);
-        vm.prank(maker);
-        commodityToken.approve(address(agent), 100e18);
-        oracle.setPrice(2512e8, block.timestamp);
-        vm.prank(solver1);
-        agent.executeIntent(intentId);
-        assertEq(uint256(agent.getIntent(intentId).state), uint256(CommodityAgent.IntentState.EXECUTED));
-    }
+        function test_executePartial_overfill_reverts() public {
+            (, bytes32 intentId) = _createIntentSelectAndApprove();
+            vm.prank(solver1);
+            vm.expectRevert(CommodityAgent.OverFill.selector);
+            agent.executePartial(intentId, 101e18);
+        }
 
-    function test_executeIntent_oracleDeviation_justOverThreshold_reverts() public {
-        CommodityAgent.IntentParams memory p = CommodityAgent.IntentParams({
-            maker: maker,
-            srcChainSelector: LOCAL_SELECTOR,
-            dstChainSelector: DST_SELECTOR,
-            srcToken: address(commodityToken),
-            dstReceiver: address(0x123),
-            totalAmount: 100e18,
-            nonce: 202,
-            xauUsdRef: 2500e8,
-            maxOracleDeviationBps: 50,
-            deadline: uint40(block.timestamp + 600)
-        });
-        bytes32 intentId = agent.createIntent(p, _signIntent(p));
-        vm.prank(solver1);
-        agent.submitBid(intentId, 1e18, 300000);
-        vm.warp(block.timestamp + 61);
-        agent.selectBid(intentId);
-        vm.prank(maker);
-        commodityToken.approve(address(agent), 100e18);
-        oracle.setPrice(2513e8, block.timestamp);
-        vm.prank(solver1);
-        vm.expectRevert(CommodityAgent.OracleDeviation.selector);
-        agent.executeIntent(intentId);
-    }
+        function test_executeIntent_oracleDeviation_reverts() public {
+            (, bytes32 intentId) = _createIntentSelectAndApprove();
+            oracle.setPrice(3000e8, block.timestamp);
+            vm.prank(solver1);
+            vm.expectRevert(CommodityAgent.OracleDeviation.selector);
+            agent.executeIntent(intentId);
+        }
 
-    function test_executeIntent_oracleDeviation_usesIntentMaxDeviationBps() public {
-        CommodityAgent.IntentParams memory p = CommodityAgent.IntentParams({
-            maker: maker,
-            srcChainSelector: LOCAL_SELECTOR,
-            dstChainSelector: DST_SELECTOR,
-            srcToken: address(commodityToken),
-            dstReceiver: address(0x123),
-            totalAmount: 100e18,
-            nonce: 203,
-            xauUsdRef: 2500e8,
-            maxOracleDeviationBps: 100,
-            deadline: uint40(block.timestamp + 600)
-        });
-        bytes32 intentId = agent.createIntent(p, _signIntent(p));
-        vm.prank(solver1);
-        agent.submitBid(intentId, 1e18, 300000);
-        vm.warp(block.timestamp + 61);
-        agent.selectBid(intentId);
-        vm.prank(maker);
-        commodityToken.approve(address(agent), 100e18);
-        oracle.setPrice(2525e8, block.timestamp);
-        vm.prank(solver1);
-        agent.executeIntent(intentId);
-        assertEq(uint256(agent.getIntent(intentId).state), uint256(CommodityAgent.IntentState.EXECUTED));
-    }
+        function test_executeIntent_oracleStale_reverts() public {
+            (, bytes32 intentId) = _createIntentSelectAndApprove();
+            vm.warp(5000);
+            oracle.setPrice(2500e8, 1000);
+            vm.prank(solver1);
+            vm.expectRevert(CommodityAgent.OracleStale.selector);
+            agent.executeIntent(intentId);
+        }
 
-    function test_executeIntent_oracleDeviation_usesDefaultDeviationBps_whenIntentZero() public {
-        CommodityAgent.IntentParams memory p = CommodityAgent.IntentParams({
-            maker: maker,
-            srcChainSelector: LOCAL_SELECTOR,
-            dstChainSelector: DST_SELECTOR,
-            srcToken: address(commodityToken),
-            dstReceiver: address(0x123),
-            totalAmount: 100e18,
-            nonce: 204,
-            xauUsdRef: 2500e8,
-            maxOracleDeviationBps: 0,
-            deadline: uint40(block.timestamp + 600)
-        });
-        bytes32 intentId = agent.createIntent(p, _signIntent(p));
-        vm.prank(solver1);
-        agent.submitBid(intentId, 1e18, 300000);
-        vm.warp(block.timestamp + 61);
-        agent.selectBid(intentId);
-        vm.prank(maker);
-        commodityToken.approve(address(agent), 100e18);
-        oracle.setPrice(2512e8, block.timestamp);
-        vm.prank(solver1);
-        agent.executeIntent(intentId);
-        assertEq(uint256(agent.getIntent(intentId).state), uint256(CommodityAgent.IntentState.EXECUTED));
-    }
+        function test_executeIntent_ccipSendFailure_revertsAndStateNotExecuted() public {
+            (, bytes32 intentId) = _createIntentSelectAndApprove();
+            router.setForceRevertCcipSend(true);
+            vm.prank(solver1);
+            vm.expectRevert();
+            agent.executeIntent(intentId);
+            assertEq(uint256(agent.getIntent(intentId).state), uint256(CommodityAgent.IntentState.BID_SELECTED));
+            assertEq(agent.getIntent(intentId).filledAmount, 0);
+        }
 
-    function test_executeIntent_oraclePriceZero_reverts() public {
-        (, bytes32 intentId) = _createIntentSelectAndApprove();
-        oracle.setPrice(0, block.timestamp);
-        vm.prank(solver1);
-        vm.expectRevert(CommodityAgent.OracleDeviation.selector);
-        agent.executeIntent(intentId);
-    }
+        function test_setOracleConfig_updatesStateAndEmits() public {
+            address newOracle = address(0xBEEF);
+            uint16 newDeviation = 75;
+            uint32 newStaleness = 7200;
+            vm.expectEmit(true, false, false, true);
+            emit CommodityAgent.OracleConfigUpdated(newOracle, newDeviation, newStaleness);
+            agent.setOracleConfig(newOracle, newDeviation, newStaleness);
+            assertEq(address(agent.xauUsdOracle()), newOracle);
+            assertEq(agent.oracleDeviationBps(), newDeviation);
+            assertEq(agent.oracleMaxStalenessSeconds(), newStaleness);
+        }
 
-    function test_executeIntent_oracleUpdatedAtZero_reverts() public {
-        (, bytes32 intentId) = _createIntentSelectAndApprove();
-        oracle.setPrice(2500e8, 0);
-        vm.prank(solver1);
-        vm.expectRevert(CommodityAgent.OracleStale.selector);
-        agent.executeIntent(intentId);
-    }
+        function test_remaining_and_filledAmount_consistent() public {
+            (, bytes32 intentId) = _createIntentSelectAndApprove();
+            CommodityAgent.IntentRecord memory recBefore = agent.getIntent(intentId);
+            assertEq(agent.remaining(intentId), recBefore.params.totalAmount);
+            vm.prank(solver1);
+            agent.executePartial(intentId, 40e18);
+            CommodityAgent.IntentRecord memory recMid = agent.getIntent(intentId);
+            assertEq(recMid.filledAmount, 40e18);
+            assertEq(agent.remaining(intentId), recMid.params.totalAmount - recMid.filledAmount);
+            vm.prank(solver1);
+            agent.executeIntent(intentId);
+            CommodityAgent.IntentRecord memory recAfter = agent.getIntent(intentId);
+            assertEq(recAfter.filledAmount, recAfter.params.totalAmount);
+            assertEq(agent.remaining(intentId), 0);
+        }
 
-    function test_quoteCcipFee_usesSelectedDstGasLimit() public {
-        (, bytes32 intentId) = _createIntentAndAdvance();
-        vm.prank(solver1);
-        agent.submitBid(intentId, 1e18, 250000);
-        vm.warp(block.timestamp + 61);
-        agent.selectBid(intentId);
-        uint256 fee = agent.quoteCcipFee(intentId, 100e18);
-        assertEq(fee, router.FEE());
-    }
+        function test_getLatestXauUsd_returnsOraclePriceAndUpdatedAt() public {
+            oracle.setPrice(2650e8, block.timestamp);
+            (int256 price, uint256 updatedAt) = agent.getLatestXauUsd();
+            assertEq(price, 2650e8);
+            assertEq(updatedAt, block.timestamp);
+        }
 
-    function test_quoteCcipFee_usesDefaultGasLimit_whenNoBidSelected() public {
-        (, bytes32 intentId) = _createIntentAndAdvance();
-        uint256 fee = agent.quoteCcipFee(intentId, 100e18);
-        assertEq(fee, router.FEE());
-    }
+        function test_getLatestXauUsd_missingOracle_reverts() public {
+            CommodityAgentHarness agentNoOracle = new CommodityAgentHarness(
+                address(router),
+                address(linkToken),
+                LOCAL_SELECTOR,
+                address(0),
+                DEFAULT_DEVIATION_BPS,
+                DEFAULT_STALENESS
+            );
+            vm.expectRevert(CommodityAgent.MissingOracle.selector);
+            agentNoOracle.getLatestXauUsd();
+        }
 
-    function test_setProofOfReserveConfig_updatesStateAndEmits() public {
-        address token = address(commodityToken);
-        address porFeed = address(porOracle);
-        vm.expectEmit(true, true, false, false);
-        emit CommodityAgent.ProofOfReserveConfigUpdated(token, porFeed, 7200);
-        agent.setProofOfReserveConfig(token, porFeed, 7200);
-        assertEq(address(agent.proofOfReserveFeeds(token)), porFeed);
-        assertEq(agent.porMaxStalenessSeconds(token), 7200);
-    }
+        function test_executeIntent_oracleDeviation_negativeRef_oppositeSigns() public {
+            CommodityAgent.IntentParams memory p = CommodityAgent.IntentParams({
+                maker: maker,
+                srcChainSelector: LOCAL_SELECTOR,
+                dstChainSelector: DST_SELECTOR,
+                srcToken: address(commodityToken),
+                dstReceiver: address(0x123),
+                totalAmount: 100e18,
+                nonce: 200,
+                xauUsdRef: -2500e8,
+                maxOracleDeviationBps: 50,
+                deadline: uint40(block.timestamp + 600)
+            });
+            bytes32 intentId = agent.createIntent(p, _signIntent(p));
+            vm.prank(solver1);
+            agent.submitBid(intentId, 1e18, 300000);
+            vm.warp(block.timestamp + 61);
+            agent.selectBid(intentId);
+            vm.prank(maker);
+            commodityToken.approve(address(agent), 100e18);
+            oracle.setPrice(2650e8, block.timestamp);
+            vm.prank(solver1);
+            vm.expectRevert(CommodityAgent.OracleDeviation.selector);
+            agent.executeIntent(intentId);
+        }
 
-    function test_executeIntent_proofOfReserve_passesWhenReservesExceedSupply() public {
-        address token = address(commodityToken);
-        agent.setProofOfReserveConfig(token, address(porOracle), 3600);
-        porOracle.setPrice(5000e18, block.timestamp);
-        (, bytes32 intentId) = _createIntentSelectAndApprove();
-        vm.prank(solver1);
-        agent.executeIntent(intentId);
-    }
+        function test_executeIntent_oracleDeviation_atThreshold_passes() public {
+            CommodityAgent.IntentParams memory p = CommodityAgent.IntentParams({
+                maker: maker,
+                srcChainSelector: LOCAL_SELECTOR,
+                dstChainSelector: DST_SELECTOR,
+                srcToken: address(commodityToken),
+                dstReceiver: address(0x123),
+                totalAmount: 100e18,
+                nonce: 201,
+                xauUsdRef: 2500e8,
+                maxOracleDeviationBps: 50,
+                deadline: uint40(block.timestamp + 600)
+            });
+            bytes32 intentId = agent.createIntent(p, _signIntent(p));
+            vm.prank(solver1);
+            agent.submitBid(intentId, 1e18, 300000);
+            vm.warp(block.timestamp + 61);
+            agent.selectBid(intentId);
+            vm.prank(maker);
+            commodityToken.approve(address(agent), 100e18);
+            oracle.setPrice(2512e8, block.timestamp);
+            vm.prank(solver1);
+            agent.executeIntent(intentId);
+            assertEq(uint256(agent.getIntent(intentId).state), uint256(CommodityAgent.IntentState.EXECUTED));
+        }
 
-    function test_executeIntent_proofOfReserve_failsWhenReservesLessThanSupply() public {
-        address token = address(commodityToken);
-        agent.setProofOfReserveConfig(token, address(porOracle), 3600);
-        porOracle.setPrice(50e18, block.timestamp);
-        (, bytes32 intentId) = _createIntentSelectAndApprove();
-        vm.prank(solver1);
-        vm.expectRevert(CommodityAgent.ProofOfReserveInsufficient.selector);
-        agent.executeIntent(intentId);
-    }
+        function test_executeIntent_oracleDeviation_justOverThreshold_reverts() public {
+            CommodityAgent.IntentParams memory p = CommodityAgent.IntentParams({
+                maker: maker,
+                srcChainSelector: LOCAL_SELECTOR,
+                dstChainSelector: DST_SELECTOR,
+                srcToken: address(commodityToken),
+                dstReceiver: address(0x123),
+                totalAmount: 100e18,
+                nonce: 202,
+                xauUsdRef: 2500e8,
+                maxOracleDeviationBps: 50,
+                deadline: uint40(block.timestamp + 600)
+            });
+            bytes32 intentId = agent.createIntent(p, _signIntent(p));
+            vm.prank(solver1);
+            agent.submitBid(intentId, 1e18, 300000);
+            vm.warp(block.timestamp + 61);
+            agent.selectBid(intentId);
+            vm.prank(maker);
+            commodityToken.approve(address(agent), 100e18);
+            oracle.setPrice(2513e8, block.timestamp);
+            vm.prank(solver1);
+            vm.expectRevert(CommodityAgent.OracleDeviation.selector);
+            agent.executeIntent(intentId);
+        }
 
-    function test_executeIntent_proofOfReserve_failsWhenStale() public {
-        address token = address(commodityToken);
-        agent.setProofOfReserveConfig(token, address(porOracle), 3600);
-        vm.warp(5000);
-        porOracle.setPrice(5000e18, 1000);
-        (, bytes32 intentId) = _createIntentSelectAndApprove();
-        vm.prank(solver1);
-        vm.expectRevert(CommodityAgent.ProofOfReserveStale.selector);
-        agent.executeIntent(intentId);
-    }
+        function test_executeIntent_oracleDeviation_usesIntentMaxDeviationBps() public {
+            CommodityAgent.IntentParams memory p = CommodityAgent.IntentParams({
+                maker: maker,
+                srcChainSelector: LOCAL_SELECTOR,
+                dstChainSelector: DST_SELECTOR,
+                srcToken: address(commodityToken),
+                dstReceiver: address(0x123),
+                totalAmount: 100e18,
+                nonce: 203,
+                xauUsdRef: 2500e8,
+                maxOracleDeviationBps: 100,
+                deadline: uint40(block.timestamp + 600)
+            });
+            bytes32 intentId = agent.createIntent(p, _signIntent(p));
+            vm.prank(solver1);
+            agent.submitBid(intentId, 1e18, 300000);
+            vm.warp(block.timestamp + 61);
+            agent.selectBid(intentId);
+            vm.prank(maker);
+            commodityToken.approve(address(agent), 100e18);
+            oracle.setPrice(2525e8, block.timestamp);
+            vm.prank(solver1);
+            agent.executeIntent(intentId);
+            assertEq(uint256(agent.getIntent(intentId).state), uint256(CommodityAgent.IntentState.EXECUTED));
+        }
 
-    function test_executeIntent_proofOfReserve_skippedWhenNotConfigured() public {
-        (, bytes32 intentId) = _createIntentSelectAndApprove();
-        vm.prank(solver1);
-        agent.executeIntent(intentId);
-    }
+        function test_executeIntent_oracleDeviation_usesDefaultDeviationBps_whenIntentZero() public {
+            CommodityAgent.IntentParams memory p = CommodityAgent.IntentParams({
+                maker: maker,
+                srcChainSelector: LOCAL_SELECTOR,
+                dstChainSelector: DST_SELECTOR,
+                srcToken: address(commodityToken),
+                dstReceiver: address(0x123),
+                totalAmount: 100e18,
+                nonce: 204,
+                xauUsdRef: 2500e8,
+                maxOracleDeviationBps: 0,
+                deadline: uint40(block.timestamp + 600)
+            });
+            bytes32 intentId = agent.createIntent(p, _signIntent(p));
+            vm.prank(solver1);
+            agent.submitBid(intentId, 1e18, 300000);
+            vm.warp(block.timestamp + 61);
+            agent.selectBid(intentId);
+            vm.prank(maker);
+            commodityToken.approve(address(agent), 100e18);
+            oracle.setPrice(2512e8, block.timestamp);
+            vm.prank(solver1);
+            agent.executeIntent(intentId);
+            assertEq(uint256(agent.getIntent(intentId).state), uint256(CommodityAgent.IntentState.EXECUTED));
+        }
 
-    function test_getProofOfReserve_returnsData() public {
-        address token = address(commodityToken);
-        agent.setProofOfReserveConfig(token, address(porOracle), 3600);
-        porOracle.setPrice(5000e18, block.timestamp);
-        (int256 reserves, uint256 updatedAt, uint256 totalSupply) = agent.getProofOfReserve(token);
-        assertEq(reserves, 5000e18);
-        assertEq(updatedAt, block.timestamp);
-        assertEq(totalSupply, 1000e18);
-    }
+        function test_executeIntent_oraclePriceZero_reverts() public {
+            (, bytes32 intentId) = _createIntentSelectAndApprove();
+            oracle.setPrice(0, block.timestamp);
+            vm.prank(solver1);
+            vm.expectRevert(CommodityAgent.OracleDeviation.selector);
+            agent.executeIntent(intentId);
+        }
 
-    function test_getProofOfReserve_returnsZeroWhenNotConfigured() public {
-        (int256 reserves, uint256 updatedAt, uint256 totalSupply) = agent.getProofOfReserve(address(commodityToken));
-        assertEq(reserves, 0);
-        assertEq(updatedAt, 0);
-        assertEq(totalSupply, 1000e18);
-    }
+        function test_executeIntent_oracleUpdatedAtZero_reverts() public {
+            (, bytes32 intentId) = _createIntentSelectAndApprove();
+            oracle.setPrice(2500e8, 0);
+            vm.prank(solver1);
+            vm.expectRevert(CommodityAgent.OracleStale.selector);
+            agent.executeIntent(intentId);
+        }
 
-    function test__ccipReceive_decodesAndEmitsDestinationExecution() public {
-        address dstReceiver = address(0x1234567890123456789012345678901234567890);
-        bytes32 intentId = keccak256("test-intent");
-        uint256 fillAmount = 50e18;
-        Client.EVMTokenAmount[] memory tokenAmounts = new Client.EVMTokenAmount[](0);
-        Client.Any2EVMMessage memory message = Client.Any2EVMMessage({
-            messageId: keccak256("incoming-msg"),
-            sourceChainSelector: DST_SELECTOR,
-            sender: abi.encode(address(router)),
-            data: abi.encode(intentId, fillAmount, dstReceiver),
-            destTokenAmounts: tokenAmounts
-        });
-        vm.prank(address(router));
-        vm.expectEmit(true, true, true, true);
-        emit CommodityAgent.DestinationExecution(
-            intentId, message.messageId, fillAmount, address(0x1234567890123456789012345678901234567890)
-        );
-        agent.exposed_ccipReceive(message);
-    }
+        function test_quoteCcipFee_usesSelectedDstGasLimit() public {
+            (, bytes32 intentId) = _createIntentAndAdvance();
+            vm.prank(solver1);
+            agent.submitBid(intentId, 1e18, 250000);
+            vm.warp(block.timestamp + 61);
+            agent.selectBid(intentId);
+            uint256 fee = agent.quoteCcipFee(intentId, 100e18);
+            assertEq(fee, router.FEE());
+        }
 
-    function _createIntentAndAdvance() internal returns (CommodityAgent.IntentParams memory p, bytes32 intentId) {
-        p = CommodityAgent.IntentParams({
-            maker: maker,
-            srcChainSelector: LOCAL_SELECTOR,
-            dstChainSelector: DST_SELECTOR,
-            srcToken: address(commodityToken),
-            dstReceiver: address(0x123),
-            totalAmount: 100e18,
-            nonce: 100,
-            xauUsdRef: 2500e8,
-            maxOracleDeviationBps: 50,
-            deadline: uint40(block.timestamp + 600)
-        });
-        intentId = agent.createIntent(p, _signIntent(p));
-        return (p, intentId);
-    }
+        function test_quoteCcipFee_usesDefaultGasLimit_whenNoBidSelected() public {
+            (, bytes32 intentId) = _createIntentAndAdvance();
+            uint256 fee = agent.quoteCcipFee(intentId, 100e18);
+            assertEq(fee, router.FEE());
+        }
 
-    function _createIntentSelectAndApprove() internal returns (CommodityAgent.IntentParams memory p, bytes32 intentId) {
-        (p, intentId) = _createIntentAndAdvance();
-        vm.prank(solver1);
-        agent.submitBid(intentId, 1e18, 300000);
-        vm.warp(block.timestamp + 61);
-        agent.selectBid(intentId);
-        vm.prank(maker);
-        commodityToken.approve(address(agent), 100e18);
-        return (p, intentId);
+        function test_setProofOfReserveConfig_updatesStateAndEmits() public {
+            address token = address(commodityToken);
+            address porFeed = address(porOracle);
+            vm.expectEmit(true, true, false, false);
+            emit CommodityAgent.ProofOfReserveConfigUpdated(token, porFeed, 7200);
+            agent.setProofOfReserveConfig(token, porFeed, 7200);
+            assertEq(address(agent.proofOfReserveFeeds(token)), porFeed);
+            assertEq(agent.porMaxStalenessSeconds(token), 7200);
+        }
+
+        function test_executeIntent_proofOfReserve_passesWhenReservesExceedSupply() public {
+            address token = address(commodityToken);
+            agent.setProofOfReserveConfig(token, address(porOracle), 3600);
+            porOracle.setPrice(5000e18, block.timestamp);
+            (, bytes32 intentId) = _createIntentSelectAndApprove();
+            vm.prank(solver1);
+            agent.executeIntent(intentId);
+        }
+
+        function test_executeIntent_proofOfReserve_failsWhenReservesLessThanSupply() public {
+            address token = address(commodityToken);
+            agent.setProofOfReserveConfig(token, address(porOracle), 3600);
+            porOracle.setPrice(50e18, block.timestamp);
+            (, bytes32 intentId) = _createIntentSelectAndApprove();
+            vm.prank(solver1);
+            vm.expectRevert(CommodityAgent.ProofOfReserveInsufficient.selector);
+            agent.executeIntent(intentId);
+        }
+
+        function test_executeIntent_proofOfReserve_failsWhenStale() public {
+            address token = address(commodityToken);
+            agent.setProofOfReserveConfig(token, address(porOracle), 3600);
+            vm.warp(5000);
+            porOracle.setPrice(5000e18, 1000);
+            (, bytes32 intentId) = _createIntentSelectAndApprove();
+            vm.prank(solver1);
+            vm.expectRevert(CommodityAgent.ProofOfReserveStale.selector);
+            agent.executeIntent(intentId);
+        }
+
+        function test_executeIntent_proofOfReserve_skippedWhenNotConfigured() public {
+            (, bytes32 intentId) = _createIntentSelectAndApprove();
+            vm.prank(solver1);
+            agent.executeIntent(intentId);
+        }
+
+        function test_getProofOfReserve_returnsData() public {
+            address token = address(commodityToken);
+            agent.setProofOfReserveConfig(token, address(porOracle), 3600);
+            porOracle.setPrice(5000e18, block.timestamp);
+            (int256 reserves, uint256 updatedAt, uint256 totalSupply) = agent.getProofOfReserve(token);
+            assertEq(reserves, 5000e18);
+            assertEq(updatedAt, block.timestamp);
+            assertEq(totalSupply, 1000e18);
+        }
+
+        function test_getProofOfReserve_returnsZeroWhenNotConfigured() public {
+            (int256 reserves, uint256 updatedAt, uint256 totalSupply) = agent.getProofOfReserve(address(commodityToken));
+            assertEq(reserves, 0);
+            assertEq(updatedAt, 0);
+            assertEq(totalSupply, 1000e18);
+        }
+
+        function test__ccipReceive_decodesAndEmitsDestinationExecution() public {
+            address dstReceiver = address(0x1234567890123456789012345678901234567890);
+            bytes32 intentId = keccak256("test-intent");
+            uint256 fillAmount = 50e18;
+            Client.EVMTokenAmount[] memory tokenAmounts = new Client.EVMTokenAmount[](0);
+            Client.Any2EVMMessage memory message = Client.Any2EVMMessage({
+                messageId: keccak256("incoming-msg"),
+                sourceChainSelector: DST_SELECTOR,
+                sender: abi.encode(address(router)),
+                data: abi.encode(intentId, fillAmount, dstReceiver),
+                destTokenAmounts: tokenAmounts
+            });
+            vm.prank(address(router));
+            vm.expectEmit(true, true, true, true);
+            emit CommodityAgent.DestinationExecution(
+                intentId, message.messageId, fillAmount, address(0x1234567890123456789012345678901234567890)
+            );
+            agent.exposed_ccipReceive(message);
+        }
+
+        function _createIntentAndAdvance() internal returns (CommodityAgent.IntentParams memory p, bytes32 intentId) {
+            p = CommodityAgent.IntentParams({
+                maker: maker,
+                srcChainSelector: LOCAL_SELECTOR,
+                dstChainSelector: DST_SELECTOR,
+                srcToken: address(commodityToken),
+                dstReceiver: address(0x123),
+                totalAmount: 100e18,
+                nonce: 100,
+                xauUsdRef: 2500e8,
+                maxOracleDeviationBps: 50,
+                deadline: uint40(block.timestamp + 600)
+            });
+            intentId = agent.createIntent(p, _signIntent(p));
+            return (p, intentId);
+        }
+
+        function _createIntentSelectAndApprove()
+            internal
+            returns (CommodityAgent.IntentParams memory p, bytes32 intentId)
+        {
+            (p, intentId) = _createIntentAndAdvance();
+            vm.prank(solver1);
+            agent.submitBid(intentId, 1e18, 300000);
+            vm.warp(block.timestamp + 61);
+            agent.selectBid(intentId);
+            vm.prank(maker);
+            commodityToken.approve(address(agent), 100e18);
+            return (p, intentId);
+        }
     }
-}
