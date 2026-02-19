@@ -61,12 +61,24 @@ async function main() {
 
   const agent = new ethers.Contract(agentAddress, COMMODITY_AGENT_ABI, provider);
   const chainId = (await provider.getNetwork()).chainId;
-  let xauUsdRef = 2500e8;
+  let xauUsdRef = 2500e8; // Default placeholder: $2500/oz (8 decimals)
   try {
-    const [price] = await agent.getLatestXauUsd();
-    if (price != null && price !== 0n) xauUsdRef = Number(price);
-  } catch {
-    // TODO: placeholder; see README for XAU oracle setup
+    const [price, updatedAt] = await agent.getLatestXauUsd();
+    if (price != null && price !== 0n && updatedAt != null && updatedAt !== 0n) {
+      xauUsdRef = Number(price);
+      console.log(`Using XAU/USD from oracle: ${xauUsdRef / 1e8} (updated at ${new Date(Number(updatedAt) * 1000).toISOString()})`);
+    } else {
+      console.warn(`Oracle returned invalid data (price=${price}, updatedAt=${updatedAt}), using placeholder: ${xauUsdRef / 1e8}`);
+    }
+  } catch (e: unknown) {
+    const errMsg = e instanceof Error ? e.message : String(e);
+    if (errMsg.includes("MissingOracle") || errMsg.includes("execution reverted")) {
+      console.warn(`XAU/USD oracle not configured on contract (${agentAddress}), using placeholder: ${xauUsdRef / 1e8}`);
+      console.warn(`To use a real Chainlink XAU/USD feed, deploy CommodityAgent with XAU_USD_ORACLE env var set.`);
+      console.warn(`See: https://docs.chain.link/data-feeds/price-feeds/addresses`);
+    } else {
+      console.warn(`Failed to fetch XAU/USD from oracle: ${errMsg}, using placeholder: ${xauUsdRef / 1e8}`);
+    }
   }
 
   const nonce = process.hrtime.bigint();

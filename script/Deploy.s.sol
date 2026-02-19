@@ -39,13 +39,20 @@ contract DeployScript is Script {
         address xauOracle = vm.envOr("XAU_USD_ORACLE", address(0));
 
         if (xauOracle == address(0)) {
+            console.log("XAU_USD_ORACLE not set, deploying MockOracleDeploy...");
             vm.broadcast();
             MockOracleDeploy mockOracle = new MockOracleDeploy();
             xauOracle = address(mockOracle);
+            console.log("MockOracleDeploy deployed at:", xauOracle);
+            console.log("Note: For production, use a real Chainlink XAU/USD feed.");
+            console.log("See: https://docs.chain.link/data-feeds/price-feeds/addresses");
+        } else {
+            console.log("Using XAU/USD oracle at:", xauOracle);
         }
 
         vm.broadcast();
         CommodityAgent agent = new CommodityAgent(router, linkToken, chainSelector, xauOracle, 50, 3600);
         console.log("CommodityAgent deployed at:", address(agent));
+        console.log("Oracle config: deviationBps=50, maxStalenessSeconds=3600");
     }
 }

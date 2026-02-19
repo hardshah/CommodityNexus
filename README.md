@@ -33,7 +33,46 @@ Deploy (one chain per run): set `CCIP_ROUTER`, `LINK_TOKEN`, optionally `CHAIN_S
 forge script script/Deploy.s.sol:DeployScript --rpc-url $RPC --broadcast --private-key $PK
 ```
 
+## XAU/USD Oracle Setup
+
+The contract requires a Chainlink XAU/USD price feed for risk checks. The agent script (`agent.ts`) automatically uses the oracle configured on the deployed contract via `getLatestXauUsd()`, or falls back to a placeholder ($2500/oz) if the oracle is not configured.
+
+### Using a Real Chainlink XAU/USD Feed
+
+1. **Find the feed address** for your network:
+   - Visit [Chainlink Price Feeds Addresses](https://docs.chain.link/data-feeds/price-feeds/addresses)
+   - Filter by network (Base Sepolia, Arbitrum Sepolia, etc.)
+   - Search for "XAU/USD" or "Gold / USD"
+   - Copy the Aggregator contract address
+
+2. **Deploy with the oracle**:
+   ```bash
+   export XAU_USD_ORACLE=<chainlink-xau-usd-aggregator-address>
+   forge script script/Deploy.s.sol:DeployScript \
+     --rpc-url $BASE_SEPOLIA_RPC \
+     --broadcast \
+     --private-key $PRIVATE_KEY
+   ```
+
+3. **Verify oracle is set**:
+   ```bash
+   cast call $COMMODITY_AGENT_BASE "xauUsdOracle()(address)" --rpc-url $BASE_SEPOLIA_RPC
+   ```
+
+4. **Update oracle config** (if needed after deployment):
+   ```bash
+   cast send $COMMODITY_AGENT_BASE "setOracleConfig(address,uint16,uint32)" \
+     <oracle-address> 50 3600 \
+     --rpc-url $BASE_SEPOLIA_RPC \
+     --private-key $OWNER_PRIVATE_KEY
+   ```
+
+### Fallback Behavior
+
+- If `XAU_USD_ORACLE` env var is unset during deployment, the deploy script deploys a `MockOracleDeploy` with a fixed price ($2500/oz).
+- The agent script (`agent.ts`) tries `getLatestXauUsd()` first; if it fails or returns invalid data, it uses a placeholder ($2500/oz) and logs a warning.
+- For production, always deploy with a real Chainlink XAU/USD feed address.
+
 ## TODOs / placeholders
 
-- **XAU/USD oracle**: Base Sepolia / Arbitrum Sepolia: use a real Chainlink XAU/USD feed when available; agent uses `getLatestXauUsd()` or a placeholder (see README and code TODOs). [Chainlink Price Feeds](https://docs.chain.link/data-feeds).
 - **SimpleAccount factory**: Default `SIMPLE_ACCOUNT_FACTORY=0x9406Cc6185a346906296840746125a0E44976454`; confirm for Base Sepolia / Arbitrum Sepolia from [ERC-4337 deployments](https://docs.erc4337.io/reference/smart-account-deployments) or Coinbase Paymaster docs.
