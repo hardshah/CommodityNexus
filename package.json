@@ -1,0 +1,24 @@
+{
+  "name": "commoditynexus",
+  "version": "1.0.0",
+  "type": "module",
+  "private": true,
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "test": "forge test",
+    "agent": "node --loader ts-node/esm agent/agent.ts",
+    "solver": "node --loader ts-node/esm agent/solver.ts"
+  },
+  "dependencies": {
+    "ethers": "6.13.5",
+    "dotenv": "16.4.5",
+    "ts-node": "10.9.2",
+    "typescript": "5.4.5",
+    "@openzeppelin/contracts": "5.4.0",
+    "@chainlink/contracts-ccip": "1.6.1",
+    "@chainlink/contracts": "1.4.0",
+    "@coinbase/coinbase-sdk": "0.25.0"
+  }
+}
